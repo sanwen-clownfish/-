@@ -1,7 +1,14 @@
 import { GestureState } from '../types';
 
+// 手动声明 process 类型，解决 "Cannot find name 'process'" 报错
+declare const process: {
+  env: {
+    API_KEY?: string;
+  }
+};
+
 // DeepSeek API Configuration
-// process.env.API_KEY is injected by the build environment/Netlify
+// process.env.API_KEY is replaced by Vite define during build
 const API_URL = 'https://api.deepseek.com/chat/completions';
 
 export const analyzeGesture = async (base64Image: string): Promise<GestureState> => {
