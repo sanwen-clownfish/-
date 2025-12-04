@@ -1,83 +1,66 @@
+import { GoogleGenAI } from "@google/genai";
 import { GestureState } from '../types';
 
-// 手动声明 process 类型，解决 "Cannot find name 'process'" 报错
+// 手动声明 process 类型，解决 TypeScript 编译报错
 declare const process: {
   env: {
     API_KEY?: string;
   }
 };
 
-// DeepSeek API Configuration
-// process.env.API_KEY is replaced by Vite define during build
-const API_URL = 'https://api.deepseek.com/chat/completions';
-
 export const analyzeGesture = async (base64Image: string): Promise<GestureState> => {
   try {
     const apiKey = process.env.API_KEY;
 
     if (!apiKey) {
-      console.warn("API Key is missing. Please check your environment variables.");
+      console.warn("API Key is missing.");
       return 'OPEN';
     }
 
-    // Construct the request payload in OpenAI-compatible format for DeepSeek
-    const payload = {
-      model: "deepseek-chat",
-      messages: [
-        {
-          role: "system",
-          content: "You are a real-time gesture recognition engine. Analyze the hand gesture and respond with valid JSON only. format: { \"state\": \"OPEN\" | \"CLOSED\" }. 'OPEN' for spread fingers, 'CLOSED' for fist or pinch."
-        },
-        {
-          role: "user",
-          content: [
-            { 
-              type: "text", 
-              text: "Analyze the hand in this image. Is it OPEN or CLOSED? Return JSON." 
+    // 初始化 Google GenAI 客户端
+    const ai = new GoogleGenAI({ apiKey: apiKey });
+
+    // 去掉 base64 前缀 (data:image/jpeg;base64,)，Gemini SDK 需要纯 base64 字符串
+    const base64Data = base64Image.split(',')[1];
+
+    if (!base64Data) {
+        return 'OPEN';
+    }
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: {
+        parts: [
+            {
+                inlineData: {
+                    mimeType: 'image/jpeg',
+                    data: base64Data
+                }
             },
             {
-              type: "image_url",
-              image_url: {
-                url: base64Image
-              }
+                text: `Analyze the hand gesture in this image strictly. 
+                - If the fingers are extended or spread out (palm visible), return "OPEN". 
+                - If the fingers are curled into a fist or pinching (closed hand), return "CLOSED".
+                - If no hand is clearly visible, return "OPEN".
+                
+                Return ONLY a valid JSON object: { "state": "OPEN" | "CLOSED" }`
             }
-          ]
-        }
-      ],
-      response_format: { type: "json_object" },
-      max_tokens: 50,
-      temperature: 0.1
-    };
-
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
+        ]
       },
-      body: JSON.stringify(payload)
+      config: {
+        responseMimeType: "application/json",
+        temperature: 0.1, // 低温度以获得确定性结果
+      }
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.warn(`DeepSeek API Error (${response.status}):`, errorText);
-      return 'OPEN';
-    }
+    const text = response.text;
+    if (!text) return 'OPEN';
 
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content;
-
-    if (!content) return 'OPEN';
-
-    // Parse the JSON response
-    // Handle potential markdown wrapping (e.g. ```json ... ```)
-    const cleanJson = content.replace(/```json\n?|```/g, '').trim();
-    
     try {
-        const result = JSON.parse(cleanJson);
+        const result = JSON.parse(text);
         return (result.state === 'CLOSED') ? 'CLOSED' : 'OPEN';
     } catch (e) {
-        console.error("Failed to parse DeepSeek response:", content);
+        console.error("Failed to parse Gemini response:", text);
         return 'OPEN';
     }
 
