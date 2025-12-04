@@ -14,30 +14,39 @@ const App: React.FC = () => {
   const [gestureState, setGestureState] = useState<GestureState>('OPEN');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const processingRef = useRef(false);
 
-  // Initialize Camera
-  useEffect(() => {
-    const startCamera = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: { width: 320, height: 240, facingMode: 'user' } 
-        });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.play();
-          setCameraActive(true);
-        }
-      } catch (err) {
-        console.warn("无法访问摄像头，已切换至鼠标交互模式:", err);
-        setCameraActive(false);
-        // Fallback to mouse mode automatically
+  const startCamera = async () => {
+    try {
+      setCameraError(null);
+      // Request standard SD resolution to save bandwidth/processing
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          width: { ideal: 320 }, 
+          height: { ideal: 240 }, 
+          facingMode: 'user' 
+        } 
+      });
+      
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        // Wait for video to be ready to play
+        await videoRef.current.play();
+        setCameraActive(true);
       }
-    };
+    } catch (err) {
+      console.warn("无法访问摄像头:", err);
+      setCameraActive(false);
+      setCameraError("无法访问摄像头 (请确保在 HTTPS 环境下运行并允许权限)");
+    }
+  };
 
+  // Initialize Camera on mount
+  useEffect(() => {
     startCamera();
   }, []);
 
@@ -55,16 +64,22 @@ const App: React.FC = () => {
         const canvas = canvasRef.current;
         const ctx = canvas.getContext('2d');
 
-        if (video.readyState === video.HAVE_ENOUGH_DATA && ctx) {
+        // Ensure video has actual dimensions
+        if (video.readyState === video.HAVE_ENOUGH_DATA && ctx && video.videoWidth > 0) {
           // Draw video frame to hidden canvas
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
+          
+          // Mirror the image for intuitive interaction
+          ctx.translate(canvas.width, 0);
+          ctx.scale(-1, 1);
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform
 
-          // Convert to Base64
-          const base64Image = canvas.toDataURL('image/jpeg', 0.5);
+          // Convert to Base64 (Lower quality for speed)
+          const base64Image = canvas.toDataURL('image/jpeg', 0.6);
 
-          // Send to Gemini
+          // Send to API
           const detectedState = await analyzeGesture(base64Image);
           setGestureState(detectedState);
         }
@@ -75,19 +90,19 @@ const App: React.FC = () => {
       }
     };
 
-    // Run analysis every 600ms to balance responsiveness and API quota
-    const intervalId = setInterval(captureAndAnalyze, 600);
+    // Run analysis every 800ms to balance responsiveness and API quota
+    const intervalId = setInterval(captureAndAnalyze, 800);
 
     return () => clearInterval(intervalId);
   }, [cameraActive]);
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen();
+      document.documentElement.requestFullscreen().catch(e => console.log(e));
       setIsFullscreen(true);
     } else {
       if (document.exitFullscreen) {
-        document.exitFullscreen();
+        document.exitFullscreen().catch(e => console.log(e));
         setIsFullscreen(false);
       }
     }
@@ -111,13 +126,26 @@ const App: React.FC = () => {
       className="relative w-screen h-screen bg-black overflow-hidden font-sans select-none cursor-pointer"
       onMouseDown={handleInteractionStart}
       onMouseUp={handleInteractionEnd}
-      onMouseLeave={handleInteractionEnd} // Reset if mouse leaves window
+      onMouseLeave={handleInteractionEnd} 
       onTouchStart={handleInteractionStart}
       onTouchEnd={handleInteractionEnd}
-      onContextMenu={(e) => e.preventDefault()} // Prevent right-click menu
+      onContextMenu={(e) => e.preventDefault()}
     >
-      {/* Hidden elements for processing */}
-      <video ref={videoRef} className="hidden" muted playsInline />
+      {/* 
+        CRITICAL FIX for Mobile/iOS: 
+        Do not use display:none (className="hidden"). 
+        Video must be rendered for canvas.drawImage to work.
+        We use opacity-0 and z-index-negative to hide it visually.
+      */}
+      <video 
+        ref={videoRef} 
+        style={{ position: 'absolute', opacity: 0, zIndex: -10, pointerEvents: 'none' }}
+        playsInline 
+        muted 
+        autoPlay 
+        width="320"
+        height="240"
+      />
       <canvas ref={canvasRef} className="hidden" />
 
       {/* Main 3D Scene */}
@@ -131,15 +159,18 @@ const App: React.FC = () => {
         onToggleFullscreen={toggleFullscreen}
         isFullscreen={isFullscreen}
         cameraActive={cameraActive}
+        onRetryCamera={startCamera} // Pass retry function
+        cameraError={cameraError}
       />
       
-      {/* Camera Preview (Only visible if camera is active) */}
+      {/* Camera Preview (Always visible if active, moved to bottom-right on mobile to be less intrusive but visible) */}
       {cameraActive && (
-        <div className="absolute top-20 right-6 w-32 h-24 rounded-lg overflow-hidden border border-white/20 opacity-30 hover:opacity-100 transition-opacity z-20 pointer-events-none hidden md:block">
+        <div className="absolute top-20 right-6 md:top-20 md:right-6 w-24 h-24 md:w-32 md:h-24 rounded-lg overflow-hidden border border-white/20 opacity-60 hover:opacity-100 transition-opacity z-20 pointer-events-none bg-black/50">
            <video 
              ref={(el) => { if (el && videoRef.current) el.srcObject = videoRef.current.srcObject }} 
              autoPlay 
              muted 
+             playsInline
              className="w-full h-full object-cover transform scale-x-[-1]" 
            />
         </div>
